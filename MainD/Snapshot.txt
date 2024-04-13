@@ -1,8 +1,0 @@
-The order is: Name, Type, Last Modified, Size
-D2	D	1712151544	4096
-	file2.txt	F	1712218033	4
-file3.txt	F	1712218039	8
-Snapshot.txt	F	1712218921	0
-D1	D	1712150967	4096
-	file1.txt	F	1712218047	6
-file4.txt	F	1712218296	0

@@ -1,0 +1,30 @@
+The order is: Name, Type, Last Modified, Size
+file1.txt	F	6	Thu Apr  4 11:07:27 2024
+
+
+file3.txt	F	8	Thu Apr  4 11:07:19 2024
+
+
+file7.txt	F	0	Sat Apr 13 15:37:43 2024
+
+file4.txt	F	0	Sat Apr 13 17:35:37 2024
+
+
+file6.txt	F	0	Sat Apr 13 15:37:36 2024
+
+
+file1.txt	F	6	Thu Apr  4 11:07:27 2024
+
+
+file3.txt	F	8	Thu Apr  4 11:07:19 2024
+
+
+file7.txt	F	0	Sat Apr 13 15:37:43 2024
+
+file4.txt	F	0	Sat Apr 13 17:35:37 2024
+
+
+file6.txt	F	0	Sat Apr 13 15:37:36 2024
+
+file5.txt	F	0	Sat Apr 13 17:49:30 2024
+
