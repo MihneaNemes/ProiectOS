@@ -3,6 +3,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <time.h>
 
 #define MAX_PATH_LENGTH 1024
@@ -15,7 +17,25 @@ struct EntryMetadata {
     int size;
 };
 
-void captureMetadata(const char *dir_path, FILE *snapshot_file) {
+void captureFileMetadata(const char *file_path, char *snapshot_content) {
+    struct stat file_stat;
+    if (stat(file_path, &file_stat) == -1) {
+        perror("Unable to get file status");
+        return;
+    }
+
+    char type = 'F';
+    char time_str[MAX_METADATA_LENGTH];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&file_stat.st_mtime));
+
+    char entry_str[MAX_METADATA_LENGTH];
+    snprintf(entry_str, sizeof(entry_str), "%s\t%c\t%d\t%s\n", file_path, type,
+             (int)file_stat.st_size, time_str);
+
+    strcat(snapshot_content, entry_str);
+}
+
+void captureDirMetadata(const char *dir_path, char *snapshot_content) {
     struct dirent *entry;
     DIR *dir = opendir(dir_path);
 
@@ -35,23 +55,10 @@ void captureMetadata(const char *dir_path, FILE *snapshot_file) {
                 continue;
             }
 
-            struct EntryMetadata metadata;
-            strcpy(metadata.name, entry->d_name);
-            if (S_ISDIR(file_stat.st_mode))
-                metadata.type = 'D';
-            else if (S_ISREG(file_stat.st_mode))
-                metadata.type = 'F';
-            else
-                continue;
-
-            metadata.last_modified = file_stat.st_mtime;
-            metadata.size = file_stat.st_size;
-
-            fprintf(snapshot_file, "%s\t%c\t%lld\t%s\n", metadata.name, metadata.type,
-                    (long long)metadata.size, ctime(&metadata.last_modified));
-
-            if (metadata.type == 'D') {
-                captureMetadata(full_path, snapshot_file);
+            if (S_ISDIR(file_stat.st_mode)) {
+                captureDirMetadata(full_path, snapshot_content);
+            } else {
+                captureFileMetadata(full_path, snapshot_content);
             }
         }
     }
@@ -60,37 +67,44 @@ void captureMetadata(const char *dir_path, FILE *snapshot_file) {
 
 void updateSnapshot(const char *dir_path, const char *output_dir) {
     char snapshot_path[MAX_PATH_LENGTH];
-    snprintf(snapshot_path, sizeof(snapshot_path), "%s/Snapshot.txt", output_dir);
+    snprintf(snapshot_path, sizeof(snapshot_path), "%s/Snapshot_%s.txt", output_dir, dir_path);
 
-    FILE *snapshot_file = fopen(snapshot_path, "a");
-    if (snapshot_file == NULL) {
+    int snapshot_fd = open(snapshot_path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (snapshot_fd == -1) {
         perror("Unable to open snapshot file for appending");
         return;
     }
 
-    
-    fseek(snapshot_file, 0, SEEK_END);
-    long file_size = ftell(snapshot_file);
-    if (file_size == 0) {
-        fprintf(snapshot_file, "The order is: Name, Type, Last Modified, Size\n");
+    off_t file_size = lseek(snapshot_fd, 0, SEEK_END);
+    if (file_size == -1) {
+        perror("Unable to determine snapshot file size");
+        close(snapshot_fd);
+        return;
     }
-    else {
-        fseek(snapshot_file, file_size - 1, SEEK_SET); 
-        char last_char = fgetc(snapshot_file);
+
+    char header[] = "The order is: Name, Type, Size, Last Modified\n";
+    if (file_size == 0) {
+        write(snapshot_fd, header, strlen(header));
+    } else {
+        lseek(snapshot_fd, file_size - 1, SEEK_SET);
+        char last_char;
+        read(snapshot_fd, &last_char, 1);
         if (last_char != '\n') {
-            fprintf(snapshot_file, "\n"); 
+            char newline = '\n';
+            write(snapshot_fd, &newline, 1);
         }
     }
 
-    captureMetadata(dir_path, snapshot_file);
+    char snapshot_content[MAX_METADATA_LENGTH] = "";
+    captureDirMetadata(dir_path, snapshot_content);
+    write(snapshot_fd, snapshot_content, strlen(snapshot_content));
 
-    fclose(snapshot_file);
+    close(snapshot_fd);
     printf("Snapshot for directory %s captured successfully!\n", dir_path);
 }
 
-
 int main(int argc, char *argv[]) {
-    if (argc < 2 || argc > 11) {
+    if (argc < 3 || argc > 12) {
         printf("Usage: %s -o <output_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
         return 1;
     }
@@ -101,7 +115,7 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 < argc) {
                 output_dir = argv[i + 1];
-                i++;  
+                i++;
             } else {
                 printf("Missing output directory path after -o option.\n");
                 return 1;
