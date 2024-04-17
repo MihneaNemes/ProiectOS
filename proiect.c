@@ -6,16 +6,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/wait.h>
 
 #define MAX_PATH_LENGTH 1024
 #define MAX_METADATA_LENGTH 512
-
-struct EntryMetadata {
-    char name[MAX_PATH_LENGTH];
-    char type;
-    time_t last_modified;
-    int size;
-};
 
 void captureFileMetadata(const char *file_path, char *snapshot_content) {
     struct stat file_stat;
@@ -35,7 +29,7 @@ void captureFileMetadata(const char *file_path, char *snapshot_content) {
     strcat(snapshot_content, entry_str);
 }
 
-void captureDirMetadata(const char *dir_path, char *snapshot_content) {
+void captureDirMetadataRecursive(const char *dir_path, char *snapshot_content) {
     struct dirent *entry;
     DIR *dir = opendir(dir_path);
 
@@ -56,7 +50,7 @@ void captureDirMetadata(const char *dir_path, char *snapshot_content) {
             }
 
             if (S_ISDIR(file_stat.st_mode)) {
-                captureDirMetadata(full_path, snapshot_content);
+                captureDirMetadataRecursive(full_path, snapshot_content);
             } else {
                 captureFileMetadata(full_path, snapshot_content);
             }
@@ -65,42 +59,49 @@ void captureDirMetadata(const char *dir_path, char *snapshot_content) {
     closedir(dir);
 }
 
-void updateSnapshot(const char *dir_path, const char *output_dir) {
+void captureDirMetadata(const char *dir_path, const char *output_dir) {
+    char snapshot_content[MAX_METADATA_LENGTH] = "";
+
+    captureDirMetadataRecursive(dir_path, snapshot_content);
+
     char snapshot_path[MAX_PATH_LENGTH];
     snprintf(snapshot_path, sizeof(snapshot_path), "%s/Snapshot_%s.txt", output_dir, dir_path);
 
-    int snapshot_fd = open(snapshot_path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    int snapshot_fd = open(snapshot_path, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (snapshot_fd == -1) {
-        perror("Unable to open snapshot file for appending");
-        return;
-    }
-
-    off_t file_size = lseek(snapshot_fd, 0, SEEK_END);
-    if (file_size == -1) {
-        perror("Unable to determine snapshot file size");
-        close(snapshot_fd);
+        perror("Unable to open snapshot file for writing");
         return;
     }
 
     char header[] = "The order is: Name, Type, Size, Last Modified\n";
-    if (file_size == 0) {
-        write(snapshot_fd, header, strlen(header));
-    } else {
-        lseek(snapshot_fd, file_size - 1, SEEK_SET);
-        char last_char;
-        read(snapshot_fd, &last_char, 1);
-        if (last_char != '\n') {
-            char newline = '\n';
-            write(snapshot_fd, &newline, 1);
-        }
-    }
-
-    char snapshot_content[MAX_METADATA_LENGTH] = "";
-    captureDirMetadata(dir_path, snapshot_content);
+    write(snapshot_fd, header, strlen(header));
     write(snapshot_fd, snapshot_content, strlen(snapshot_content));
 
     close(snapshot_fd);
-    printf("Snapshot for directory %s captured successfully!\n", dir_path);
+    printf("Snapshot for directory %s appended successfully.\n", dir_path);
+}
+
+void updateSnapshot(const char *output_dir, char *argv[], int start_index, int end_index) {
+    int i;
+    for (i = start_index; i < end_index; i++) {
+        char *dir_path = argv[i];
+        pid_t child_pid = fork();
+        if (child_pid == 0) {
+            captureDirMetadata(dir_path, output_dir);
+            exit(0);
+        } else if (child_pid == -1) {
+            perror("Failed to fork a child process");
+            return;
+        }
+    }
+
+    int status;
+    pid_t pid;
+    while ((pid = wait(&status)) > 0) {
+        if (WIFEXITED(status)) {
+            printf("Child Process %d terminated with PID %d and exit code %d.\n", pid, pid, WEXITSTATUS(status));
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -120,10 +121,18 @@ int main(int argc, char *argv[]) {
                 printf("Missing output directory path after -o option.\n");
                 return 1;
             }
-        } else {
-            updateSnapshot(argv[i], output_dir);
         }
     }
+
+    int start_index = 1;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0) {
+            start_index = i + 2;
+            break;
+        }
+    }
+
+    updateSnapshot(output_dir, argv, start_index, argc);
 
     return 0;
 }
