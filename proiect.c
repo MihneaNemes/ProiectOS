@@ -29,7 +29,7 @@ void captureFileMetadata(const char *file_path, char *snapshot_content) {
     strcat(snapshot_content, entry_str);
 }
 
-void captureDirMetadataRecursive(const char *dir_path, char *snapshot_content) {
+void captureDirMetadataRecursive(const char *dir_path, char *snapshot_content, const char *isolated_space_dir) {
     struct dirent *entry;
     DIR *dir = opendir(dir_path);
 
@@ -50,8 +50,25 @@ void captureDirMetadataRecursive(const char *dir_path, char *snapshot_content) {
             }
 
             if (S_ISDIR(file_stat.st_mode)) {
-                captureDirMetadataRecursive(full_path, snapshot_content);
+                captureDirMetadataRecursive(full_path, snapshot_content, isolated_space_dir);
             } else {
+                if ((file_stat.st_mode & S_IRWXU) == 0 && (file_stat.st_mode & S_IRWXG) == 0 && (file_stat.st_mode & S_IRWXO) == 0) {
+                    pid_t child_pid = fork();
+                    if (child_pid == 0) {
+                        char cmd[MAX_PATH_LENGTH];
+                        snprintf(cmd, sizeof(cmd), "./verify_for_malicious.sh %s", full_path);
+                        int ret = system(cmd);
+                        if (ret != 0) {
+                            char mv_cmd[MAX_PATH_LENGTH];
+                            snprintf(mv_cmd, sizeof(mv_cmd), "mv %s %s", full_path, isolated_space_dir);
+                            system(mv_cmd);
+                        }
+                        exit(0);
+                    } else if (child_pid == -1) {
+                        perror("Failed to fork a child process");
+                        return;
+                    }
+                }
                 captureFileMetadata(full_path, snapshot_content);
             }
         }
@@ -59,10 +76,10 @@ void captureDirMetadataRecursive(const char *dir_path, char *snapshot_content) {
     closedir(dir);
 }
 
-void captureDirMetadata(const char *dir_path, const char *output_dir) {
+void captureDirMetadata(const char *dir_path, const char *output_dir, const char *isolated_space_dir) {
     char snapshot_content[MAX_METADATA_LENGTH] = "";
 
-    captureDirMetadataRecursive(dir_path, snapshot_content);
+    captureDirMetadataRecursive(dir_path, snapshot_content, isolated_space_dir);
 
     char snapshot_path[MAX_PATH_LENGTH];
     snprintf(snapshot_path, sizeof(snapshot_path), "%s/Snapshot_%s.txt", output_dir, dir_path);
@@ -81,13 +98,16 @@ void captureDirMetadata(const char *dir_path, const char *output_dir) {
     printf("Snapshot for directory %s appended successfully.\n", dir_path);
 }
 
-void updateSnapshot(const char *output_dir, char *argv[], int start_index, int end_index) {
+void updateSnapshot(const char *output_dir, const char *isolated_space_dir, char *argv[], int start_index, int end_index) {
     int i;
     for (i = start_index; i < end_index; i++) {
         char *dir_path = argv[i];
+        if (strcmp(argv[i - 1], "-s") == 0) {
+            continue;
+        }
         pid_t child_pid = fork();
         if (child_pid == 0) {
-            captureDirMetadata(dir_path, output_dir);
+            captureDirMetadata(dir_path, output_dir, isolated_space_dir);
             exit(0);
         } else if (child_pid == -1) {
             perror("Failed to fork a child process");
@@ -105,12 +125,13 @@ void updateSnapshot(const char *output_dir, char *argv[], int start_index, int e
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 3 || argc > 12) {
-        printf("Usage: %s -o <output_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
+    if (argc < 4 || argc > 13) {
+        printf("Usage: %s -o <output_dir> -s <isolated_space_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
         return 1;
     }
 
     char *output_dir = NULL;
+    char *isolated_space_dir = NULL;
     int i;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -121,18 +142,26 @@ int main(int argc, char *argv[]) {
                 printf("Missing output directory path after -o option.\n");
                 return 1;
             }
+        } else if (strcmp(argv[i], "-s") == 0) {
+            if (i + 1 < argc) {
+                isolated_space_dir = argv[i + 1];
+                i++;
+            } else {
+                printf("Missing isolated space directory path after -s option.\n");
+                return 1;
+            }
         }
     }
 
     int start_index = 1;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
-            start_index = i + 2;
+            start_index = i + 3;
             break;
         }
     }
 
-    updateSnapshot(output_dir, argv, start_index, argc);
+    updateSnapshot(output_dir, isolated_space_dir, argv, start_index, argc);
 
     return 0;
 }
