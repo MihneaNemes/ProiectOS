@@ -7,9 +7,112 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/wait.h>
+#include <stdbool.h>
+#include <ctype.h>
 
 #define MAX_PATH_LENGTH 1024
 #define MAX_METADATA_LENGTH 512
+
+#define SUSPICIOUS_LINES_THRESHOLD 3
+#define SUSPICIOUS_WORDS_THRESHOLD 1000
+#define SUSPICIOUS_CHARACTERS_THRESHOLD 2000
+
+#define PIPE_READ_END 0
+#define PIPE_WRITE_END 1
+
+bool contains_non_ascii(const char *str) {
+    while (*str) {
+        if (!isascii(*str))
+            return true;
+        str++;
+    }
+    return false;
+}
+
+bool contains_dangerous_keywords(const char *str) {
+    const char *keywords[] = {"corrupted", "dangerous", "risk", "attack", "malware", "malicious"};
+    const int num_keywords = sizeof(keywords) / sizeof(keywords[0]);
+
+    for (int i = 0; i < num_keywords; ++i) {
+        if (strstr(str, keywords[i]) != NULL)
+            return true;
+    }
+    return false;
+}
+
+void isolate_file(const char *file_path, const char *isolated_space_dir) {
+    char mv_cmd[MAX_PATH_LENGTH];
+    snprintf(mv_cmd, sizeof(mv_cmd), "mv %s %s", file_path, isolated_space_dir);
+    system(mv_cmd);
+}
+
+void evaluate_file(const char *file_path, int pipe_fd, const char *isolated_space_dir) {
+    int file_fd = open(file_path, O_RDONLY);
+    if (file_fd == -1) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+
+    char buffer[MAX_METADATA_LENGTH];
+    int num_lines = 0;
+    int num_words = 0;
+    int num_characters = 0;
+
+    ssize_t bytes_read;
+    while ((bytes_read = read(file_fd, buffer, sizeof(buffer))) > 0) {
+        for (ssize_t i = 0; i < bytes_read; ++i) {
+            if (buffer[i] == '\n') {
+                num_lines++;
+            } else if (isspace(buffer[i])) {
+                num_words++;
+            }
+            num_characters++;
+        }
+    }
+
+    close(file_fd);
+
+    bool is_suspicious = false;
+    if (num_lines < SUSPICIOUS_LINES_THRESHOLD &&
+        num_words > SUSPICIOUS_WORDS_THRESHOLD &&
+        num_characters > SUSPICIOUS_CHARACTERS_THRESHOLD) {
+        is_suspicious = true;
+    } else {
+        char content[MAX_METADATA_LENGTH];
+        snprintf(content, sizeof(content), "SAFE");
+        write(pipe_fd, content, strlen(content) + 1);
+        close(pipe_fd);
+        exit(EXIT_SUCCESS);
+    }
+
+    file_fd = open(file_path, O_RDONLY);
+    if (file_fd == -1) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+
+    char read_buffer[MAX_METADATA_LENGTH];
+    ssize_t read_bytes;
+    while ((read_bytes = read(file_fd, read_buffer, sizeof(read_buffer))) > 0) {
+        if (contains_non_ascii(read_buffer) || contains_dangerous_keywords(read_buffer)) {
+            is_suspicious = true;
+            break;
+        }
+    }
+
+    close(file_fd);
+
+    if (is_suspicious) {
+        isolate_file(file_path, isolated_space_dir);
+    }
+
+    char result[MAX_METADATA_LENGTH];
+    snprintf(result, sizeof(result), "%s", is_suspicious ? file_path : "SAFE");
+
+    write(pipe_fd, result, strlen(result) + 1);
+    close(pipe_fd);
+    exit(EXIT_SUCCESS);
+}
 
 void captureFileMetadata(const char *file_path, char *snapshot_content) {
     struct stat file_stat;
